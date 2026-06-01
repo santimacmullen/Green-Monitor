@@ -1,0 +1,264 @@
+# =============================================================================
+# plant-sensor.yaml — ESP32 plant monitoring node
+# Publishes one MQTT message per sensor reading to sensors/{plant_id}
+# Contract: https://github.com/lditzel94/plant-monitoring/blob/main/docs/ESP32_MQTT_CONTRACT.md
+#
+# Before flashing:
+#   1. Register the plant and all sensors in the LeafWise backend.
+#   2. Replace the placeholder UUIDs in the substitutions below.
+#   3. Copy secrets.yaml.example → secrets.yaml and fill in credentials.
+#   4. Calibrate soil moisture and pH probes (see comments on each sensor).
+#
+# Flash: esphome run plant-sensor.yaml
+# =============================================================================
+
+substitutions:
+  device_name: plant-sensor-01
+  device_id: esp32-plant-sensor-01
+  firmware_version: "1.0.0"
+
+  # UUIDs must match the LeafWise backend — register plant+sensors first.
+  plant_id:             "00000000-0000-0000-0000-000000000000"
+  sensor_id_temp:       "00000000-0000-0000-0000-000000000001"
+  sensor_id_humidity:   "00000000-0000-0000-0000-000000000002"
+  sensor_id_light:      "00000000-0000-0000-0000-000000000003"
+  sensor_id_moisture:   "00000000-0000-0000-0000-000000000004"
+  sensor_id_ph:         "00000000-0000-0000-0000-000000000005"
+
+# -----------------------------------------------------------------------------
+esphome:
+  name: ${device_name}
+  friendly_name: Plant Sensor 01
+
+esp32:
+  board: esp32dev
+  framework:
+    type: arduino
+
+logger:
+
+ota:
+  - platform: esphome
+    password: !secret ota_password
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  ap:
+    ssid: "${device_name} Fallback"
+    password: !secret ap_password
+
+captive_portal:
+
+mqtt:
+  broker: !secret mqtt_broker
+  port: !secret mqtt_port
+  client_id: "esp32-${device_name}"
+  keepalive: 60s
+  # For authenticated brokers, uncomment:
+  # username: !secret mqtt_username
+  # password: !secret mqtt_password
+
+time:
+  - platform: sntp
+    id: sntp_time
+    timezone: America/Argentina/Buenos_Aires
+
+# BH1750 light sensor uses I2C
+i2c:
+  sda: GPIO21
+  scl: GPIO22
+  scan: true
+
+# =============================================================================
+# Sensors
+# =============================================================================
+sensor:
+
+  # ---------------------------------------------------------------------------
+  # Temperature + Humidity — DHT22 on GPIO4
+  # Change `pin` if wired differently.
+  # ---------------------------------------------------------------------------
+  - platform: dht
+    pin: GPIO4
+    model: DHT22
+    update_interval: 60s
+
+    temperature:
+      id: sensor_temperature
+      name: "Temperature"
+      unit_of_measurement: "°C"
+      on_value:
+        then:
+          - mqtt.publish:
+              topic: "sensors/${plant_id}"
+              qos: 1
+              retain: false
+              payload: !lambda |-
+                char ts[25] = "";
+                auto t = id(sntp_time).now();
+                if (t.is_valid())
+                  snprintf(ts, sizeof(ts), "%04d-%02d-%02dT%02d:%02d:%02dZ",
+                    t.year, t.month, t.day_of_month, t.hour, t.minute, t.second);
+                char buf[512];
+                snprintf(buf, sizeof(buf),
+                  "{\"plant_id\":\"%s\",\"sensor_id\":\"%s\","
+                  "\"type\":\"temperature\",\"value\":%.2f,\"unit\":\"celsius\","
+                  "\"recorded_at\":\"%s\","
+                  "\"metadata\":{\"device_id\":\"%s\",\"firmware_version\":\"%s\","
+                  "\"rssi_dbm\":\"%d\"}}",
+                  "${plant_id}", "${sensor_id_temp}", x, ts,
+                  "${device_id}", "${firmware_version}", (int)WiFi.RSSI());
+                return std::string(buf);
+
+    humidity:
+      id: sensor_humidity
+      name: "Humidity"
+      unit_of_measurement: "%"
+      on_value:
+        then:
+          - mqtt.publish:
+              topic: "sensors/${plant_id}"
+              qos: 1
+              retain: false
+              payload: !lambda |-
+                char ts[25] = "";
+                auto t = id(sntp_time).now();
+                if (t.is_valid())
+                  snprintf(ts, sizeof(ts), "%04d-%02d-%02dT%02d:%02d:%02dZ",
+                    t.year, t.month, t.day_of_month, t.hour, t.minute, t.second);
+                char buf[512];
+                snprintf(buf, sizeof(buf),
+                  "{\"plant_id\":\"%s\",\"sensor_id\":\"%s\","
+                  "\"type\":\"humidity\",\"value\":%.2f,\"unit\":\"percent\","
+                  "\"recorded_at\":\"%s\","
+                  "\"metadata\":{\"device_id\":\"%s\",\"firmware_version\":\"%s\","
+                  "\"rssi_dbm\":\"%d\"}}",
+                  "${plant_id}", "${sensor_id_humidity}", x, ts,
+                  "${device_id}", "${firmware_version}", (int)WiFi.RSSI());
+                return std::string(buf);
+
+  # ---------------------------------------------------------------------------
+  # Light — BH1750 on I2C (SDA=GPIO21, SCL=GPIO22)
+  # Default I2C address 0x23 (ADDR pin low). Use 0x5C if ADDR is pulled high.
+  # ---------------------------------------------------------------------------
+  - platform: bh1750
+    id: sensor_light
+    name: "Light"
+    address: 0x23
+    update_interval: 60s
+    on_value:
+      then:
+        - mqtt.publish:
+            topic: "sensors/${plant_id}"
+            qos: 1
+            retain: false
+            payload: !lambda |-
+              char ts[25] = "";
+              auto t = id(sntp_time).now();
+              if (t.is_valid())
+                snprintf(ts, sizeof(ts), "%04d-%02d-%02dT%02d:%02d:%02dZ",
+                  t.year, t.month, t.day_of_month, t.hour, t.minute, t.second);
+              char buf[512];
+              snprintf(buf, sizeof(buf),
+                "{\"plant_id\":\"%s\",\"sensor_id\":\"%s\","
+                "\"type\":\"light\",\"value\":%.1f,\"unit\":\"lux\","
+                "\"recorded_at\":\"%s\","
+                "\"metadata\":{\"device_id\":\"%s\",\"firmware_version\":\"%s\","
+                "\"rssi_dbm\":\"%d\"}}",
+                "${plant_id}", "${sensor_id_light}", x, ts,
+                "${device_id}", "${firmware_version}", (int)WiFi.RSSI());
+              return std::string(buf);
+
+  # ---------------------------------------------------------------------------
+  # Soil Moisture — capacitive sensor on GPIO34 (ADC1_CH6)
+  #
+  # Calibration: measure the raw voltage in dry air and submerged in water,
+  # then update the two values in `calibrate_linear` below.
+  # Typical values for a generic capacitive sensor at 3.3V:
+  #   dry in air  → ~3.0 V  (= 0 %)
+  #   in water    → ~1.1 V  (= 100 %)
+  # ---------------------------------------------------------------------------
+  - platform: adc
+    id: sensor_soil_moisture
+    pin: GPIO34
+    name: "Soil Moisture"
+    attenuation: 11db
+    update_interval: 60s
+    filters:
+      - calibrate_linear:
+          - 3.0 -> 0.0
+          - 1.1 -> 100.0
+      - clamp:
+          min_value: 0.0
+          max_value: 100.0
+    unit_of_measurement: "%"
+    on_value:
+      then:
+        - mqtt.publish:
+            topic: "sensors/${plant_id}"
+            qos: 1
+            retain: false
+            payload: !lambda |-
+              char ts[25] = "";
+              auto t = id(sntp_time).now();
+              if (t.is_valid())
+                snprintf(ts, sizeof(ts), "%04d-%02d-%02dT%02d:%02d:%02dZ",
+                  t.year, t.month, t.day_of_month, t.hour, t.minute, t.second);
+              char buf[512];
+              snprintf(buf, sizeof(buf),
+                "{\"plant_id\":\"%s\",\"sensor_id\":\"%s\","
+                "\"type\":\"soil_moisture\",\"value\":%.1f,\"unit\":\"percent\","
+                "\"recorded_at\":\"%s\","
+                "\"metadata\":{\"device_id\":\"%s\",\"firmware_version\":\"%s\","
+                "\"rssi_dbm\":\"%d\"}}",
+                "${plant_id}", "${sensor_id_moisture}", x, ts,
+                "${device_id}", "${firmware_version}", (int)WiFi.RSSI());
+              return std::string(buf);
+
+  # ---------------------------------------------------------------------------
+  # Soil pH — analog pH probe on GPIO35 (ADC1_CH7)
+  #
+  # Calibration: use pH 4 and pH 7 buffer solutions to find the actual voltage
+  # at each reference point, then adjust the calibrate_linear values below.
+  # Typical probe at 3.3V supply:
+  #   ~2.03 V → pH 4
+  #   ~2.50 V → pH 7
+  # The lambda converts voltage to pH using a linear fit.
+  # ---------------------------------------------------------------------------
+  - platform: adc
+    id: sensor_soil_ph
+    pin: GPIO35
+    name: "Soil pH"
+    attenuation: 11db
+    update_interval: 60s
+    filters:
+      - calibrate_linear:
+          - 2.03 -> 4.0
+          - 2.50 -> 7.0
+      - clamp:
+          min_value: 0.0
+          max_value: 14.0
+    unit_of_measurement: "pH"
+    on_value:
+      then:
+        - mqtt.publish:
+            topic: "sensors/${plant_id}"
+            qos: 1
+            retain: false
+            payload: !lambda |-
+              char ts[25] = "";
+              auto t = id(sntp_time).now();
+              if (t.is_valid())
+                snprintf(ts, sizeof(ts), "%04d-%02d-%02dT%02d:%02d:%02dZ",
+                  t.year, t.month, t.day_of_month, t.hour, t.minute, t.second);
+              char buf[512];
+              snprintf(buf, sizeof(buf),
+                "{\"plant_id\":\"%s\",\"sensor_id\":\"%s\","
+                "\"type\":\"soil_ph\",\"value\":%.2f,\"unit\":\"ph\","
+                "\"recorded_at\":\"%s\","
+                "\"metadata\":{\"device_id\":\"%s\",\"firmware_version\":\"%s\","
+                "\"rssi_dbm\":\"%d\"}}",
+                "${plant_id}", "${sensor_id_ph}", x, ts,
+                "${device_id}", "${firmware_version}", (int)WiFi.RSSI());
+              return std::string(buf);
